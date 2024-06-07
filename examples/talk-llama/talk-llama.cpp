@@ -55,6 +55,7 @@ struct whisper_params {
     int32_t max_tokens = 32;
     int32_t audio_ctx  = 0;
     int32_t n_gpu_layers = 999;
+    int capacity = 1;
 
     float vad_thold  = 0.6f;
     float freq_thold = 100.0f;
@@ -99,6 +100,7 @@ bool whisper_params_parse(int argc, char ** argv, whisper_params & params) {
         else if (arg == "-ngl" || arg == "--n-gpu-layers")   { params.n_gpu_layers   = std::stoi(argv[++i]); }
         else if (arg == "-vth" || arg == "--vad-thold")      { params.vad_thold      = std::stof(argv[++i]); }
         else if (arg == "-fth" || arg == "--freq-thold")     { params.freq_thold     = std::stof(argv[++i]); }
+        else if (arg == "-cap" || arg == "--capacity")       { params.capacity       = std::stoi(argv[++i]); }
         else if (arg == "-tr"  || arg == "--translate")      { params.translate      = true; }
         else if (arg == "-ps"  || arg == "--print-special")  { params.print_special  = true; }
         else if (arg == "-pe"  || arg == "--print-energy")   { params.print_energy   = true; }
@@ -106,7 +108,7 @@ bool whisper_params_parse(int argc, char ** argv, whisper_params & params) {
         else if (arg == "-ng"  || arg == "--no-gpu")         { params.use_gpu        = false; }
         else if (arg == "-fa"  || arg == "--flash-attn")     { params.flash_attn     = true; }
         else if (arg == "-p"   || arg == "--person")         { params.person         = argv[++i]; }
-        else if (arg == "-bn"   || arg == "--bot-name")      { params.bot_name       = argv[++i]; }
+        else if (arg == "-bn"  || arg == "--bot-name")      { params.bot_name       = argv[++i]; }
         else if (arg == "--session")                         { params.path_session   = argv[++i]; }
         else if (arg == "-w"   || arg == "--wake-command")   { params.wake_cmd       = argv[++i]; }
         else if (arg == "-ho"  || arg == "--heard-ok")       { params.heard_ok       = argv[++i]; }
@@ -246,6 +248,16 @@ std::vector<std::string> get_words(const std::string &txt) {
 
     return words;
 }
+
+bool contains_only_english(const std::string &str) {
+    for (char ch : str) {
+        if (!isalpha(ch) && !isdigit(ch) && !ispunct(ch) && !isspace(ch)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 
 const std::string k_prompt_whisper = R"(A conversation with a person called {1}.)";
 
@@ -589,7 +601,10 @@ int main(int argc, char ** argv) {
                 }
 
                 // remove all characters, except for letters, numbers, punctuation and ':', '\'', '-', ' '
-                text_heard = std::regex_replace(text_heard, std::regex("[^a-zA-Z0-9\\.,\\?!\\s\\:\\'\\-]"), "");
+                //text_heard = std::regex_replace(text_heard, std::regex("[^a-zA-Z0-9\\.,\\?!\\s\\:\\'\\-]"), "");
+                // keep Chinese characters
+                text_heard = std::regex_replace(text_heard, std::regex("[^\\w\\s,.!?;:\\-\u4E00-\u9FFF]+"), "");
+
 
                 // take first line
                 text_heard = text_heard.substr(0, text_heard.find_first_of('\n'));
@@ -624,6 +639,8 @@ int main(int argc, char ** argv) {
                 // text inference
                 bool done = false;
                 std::string text_to_speak;
+                std::string token_to_speak;
+                int cap = 0;
                 while (true) {
                     // predict
                     if (embd.size() > 0) {
@@ -756,6 +773,61 @@ int main(int argc, char ** argv) {
                             text_to_speak += llama_token_to_piece(ctx_llama, id);
 
                             printf("%s", llama_token_to_piece(ctx_llama, id).c_str());
+
+
+
+                            token_to_speak += llama_token_to_piece(ctx_llama, id);
+                            cap++;
+                            if (cap >= params.capacity) {
+                                token_to_speak = ::replace(token_to_speak, "'", "'\"'\"'");
+
+                                for (std::string & antiprompt : antiprompts) {
+                                    //std::string new_antipromt = antiprompt.c_str() + " ";
+                                    if(antiprompt.find(llama_token_to_piece(ctx_llama, id).c_str()) == std::string::npos){
+                                        bool text_english_only = contains_only_english(token_to_speak);
+
+                                        std::string lang = "zh";
+                                        if (text_english_only == true) {
+                                            lang = "en";
+                                        }
+
+                                        int ret = system(("espeak-ng -v " + lang + " '" + token_to_speak + "'").c_str());
+                                        if (ret != 0) {
+                                            fprintf(stderr, "%s: failed to speak\n", __func__);
+                                        }
+                                        token_to_speak = "";
+                                        cap = 0;
+                                        break;
+                                    }
+                                }
+
+                                for (std::string & antiprompt : antiprompts) {
+                                    if (token_to_speak.length() - antiprompt.length() >= 0 && token_to_speak.find(antiprompt.c_str(), token_to_speak.length() - antiprompt.length(),
+                                                         antiprompt.length()) != std::string::npos) {
+                                        //printf("00 %s", token_to_speak.c_str());
+                                        token_to_speak = ::replace(token_to_speak, antiprompt, "");
+                                        break;
+                                    }
+                                }
+
+
+//                                bool text_english_only = contains_only_english(token_to_speak);
+//
+//                                std::string lang = "zh";
+//                                if (text_english_only == true) {
+//                                    lang = "en";
+//                                }
+//
+//
+//
+//                                int ret = system(("espeak-ng -v " + lang + " '" + token_to_speak + "'").c_str());
+//                                if (ret != 0) {
+//                                    fprintf(stderr, "%s: failed to speak\n", __func__);
+//                                }
+//                                token_to_speak = "";
+//                                cap = 0;
+                            }
+
                             fflush(stdout);
                         }
                     }
@@ -766,11 +838,14 @@ int main(int argc, char ** argv) {
                             last_output += llama_token_to_piece(ctx_llama, embd_inp[i]);
                         }
                         last_output += llama_token_to_piece(ctx_llama, embd[0]);
-
                         for (std::string & antiprompt : antiprompts) {
                             if (last_output.find(antiprompt.c_str(), last_output.length() - antiprompt.length(), antiprompt.length()) != std::string::npos) {
                                 done = true;
+                                //printf("before %s, %s, %s", antiprompt.c_str(), token_to_speak.c_str(), text_to_speak.c_str());
                                 text_to_speak = ::replace(text_to_speak, antiprompt, "");
+
+                                token_to_speak = ::replace(token_to_speak, antiprompt, "");
+                                //printf("after %s, %s", token_to_speak.c_str(), text_to_speak.c_str());
                                 fflush(stdout);
                                 need_to_save_session = true;
                                 break;
@@ -785,7 +860,32 @@ int main(int argc, char ** argv) {
                     }
                 }
 
-                speak_with_file(params.speak, text_to_speak, params.speak_file, voice_id);
+                if (token_to_speak != "") {
+                    token_to_speak = ::replace(token_to_speak, "'", "'\"'\"'");
+                    for (std::string & antiprompt : antiprompts) {
+                        if (token_to_speak.length() - antiprompt.length() >= 0 && token_to_speak.find(antiprompt.c_str(), token_to_speak.length() - antiprompt.length(),
+                                                                                                      antiprompt.length()) != std::string::npos) {
+                            printf("00 %s", token_to_speak.c_str());
+                            token_to_speak = ::replace(token_to_speak, antiprompt, "");
+                            break;
+                        }
+                    }
+
+                    bool text_english_only = contains_only_english(token_to_speak);
+
+                    std::string lang = "zh";
+                    if (text_english_only == true) {
+                        lang = "en";
+                    }
+
+                    int ret = system(("espeak-ng -v " + lang + " '" + token_to_speak + "'").c_str());
+                    if (ret != 0) {
+                        fprintf(stderr, "%s: failed to speak\n", __func__);
+                    }
+                    token_to_speak = "";
+                    cap = 0;
+                }
+                //speak_with_file(params.speak, text_to_speak, params.speak_file, voice_id);
 
                 audio.clear();
             }

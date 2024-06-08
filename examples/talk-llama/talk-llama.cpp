@@ -15,6 +15,13 @@
 #include <vector>
 #include <regex>
 #include <sstream>
+#include  <mutex>
+
+void mut_speak(std::string command, std::mutex& mylock){
+    mylock.lock();
+    int ret = system(command.c_str());
+    mylock.unlock();
+}
 
 std::vector<llama_token> llama_tokenize(struct llama_context * ctx, const std::string & text, bool add_bos) {
     auto * model = llama_get_model(ctx);
@@ -641,6 +648,8 @@ int main(int argc, char ** argv) {
                 std::string text_to_speak;
                 std::string token_to_speak;
                 int cap = 0;
+                std::vector<std::thread> threads;
+                std::mutex mylock;
                 while (true) {
                     // predict
                     if (embd.size() > 0) {
@@ -790,11 +799,12 @@ int main(int argc, char ** argv) {
                                         if (text_english_only == true) {
                                             lang = "en";
                                         }
-
-                                        int ret = system(("espeak-ng -v " + lang + " '" + token_to_speak + "'").c_str());
-                                        if (ret != 0) {
-                                            fprintf(stderr, "%s: failed to speak\n", __func__);
-                                        }
+                                        std::string command = ("espeak-ng -v " + lang + " '" + token_to_speak + "'").c_str();
+                                        threads.emplace_back(std::thread(mut_speak,command,std::ref(mylock)));
+                                        //int ret = system(("espeak-ng -v " + lang + " '" + token_to_speak + "'").c_str());
+//                                        if (ret != 0) {
+//                                            fprintf(stderr, "%s: failed to speak\n", __func__);
+//                                        }
                                         token_to_speak = "";
                                         cap = 0;
                                         break;

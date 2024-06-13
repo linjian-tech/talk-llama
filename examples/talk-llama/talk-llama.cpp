@@ -898,6 +898,10 @@ int main(int argc, char ** argv) {
                 //speak_with_file(params.speak, text_to_speak, params.speak_file, voice_id);
 
                 audio.clear();
+
+                for(int i =0 ; i<threads.size(); i++){
+                    threads[i].join();
+                }
             }
         }
     }

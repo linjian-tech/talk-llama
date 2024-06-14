@@ -453,7 +453,7 @@ libwhisper.so: $(WHISPER_OBJ)
 	$(CXX) $(CXXFLAGS) -shared -o libwhisper.so $(WHISPER_OBJ) $(LDFLAGS)
 
 clean:
-	rm -f *.o main stream command talk talk-llama bench quantize server lsp libwhisper.a libwhisper.so
+	rm -f *.o main stream command talk talk-llama talk-dec-llama bench quantize server lsp libwhisper.a libwhisper.so
 
 #
 # Examples
@@ -490,7 +490,10 @@ talk: examples/talk/talk.cpp examples/talk/gpt-2.cpp $(SRC_COMMON) $(SRC_COMMON_
 	$(CXX) $(CXXFLAGS) examples/talk/talk.cpp examples/talk/gpt-2.cpp $(SRC_COMMON) $(SRC_COMMON_SDL) $(WHISPER_OBJ) -o talk $(CC_SDL) $(LDFLAGS)
 
 talk-llama: examples/talk-llama/talk-llama.cpp examples/talk-llama/llama.cpp examples/talk-llama/unicode.cpp examples/talk-llama/unicode-data.cpp $(SRC_COMMON) $(SRC_COMMON_SDL) $(WHISPER_OBJ)
-	$(CXX) $(CXXFLAGS) examples/talk-llama/talk-llama.cpp examples/talk-llama/llama.cpp examples/talk-llama/unicode.cpp examples/talk-llama/unicode-data.cpp $(SRC_COMMON) $(SRC_COMMON_SDL) $(WHISPER_OBJ) -o talk-llama $(CC_SDL) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) examples/talk-llama/talk-llama.cpp examples/talk-llama/llama.cpp examples/talk-llama/unicode.cpp examples/talk-llama/unicode-data.cpp $(SRC_COMMON) $(SRC_COMMON_SDL) $(WHISPER_OBJ) -o talk-llama $(CC_SDL) $(LDFLAGS) -lrt
+
+talk-llama: examples/talk-llama/talk-dec-llama.cpp examples/talk-llama/llama.cpp examples/talk-llama/unicode.cpp examples/talk-llama/unicode-data.cpp $(SRC_COMMON) $(SRC_COMMON_SDL) $(WHISPER_OBJ)
+	$(CXX) $(CXXFLAGS) examples/talk-llama/talk-dec-llama.cpp examples/talk-llama/llama.cpp examples/talk-llama/unicode.cpp examples/talk-llama/unicode-data.cpp $(SRC_COMMON) $(SRC_COMMON_SDL) $(WHISPER_OBJ) -o talk-dec-llama $(CC_SDL) $(LDFLAGS) -lrt
 
 #
 # Audio samples

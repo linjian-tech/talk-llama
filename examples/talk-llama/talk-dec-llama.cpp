@@ -17,10 +17,64 @@
 #include <sstream>
 #include  <mutex>
 
+#include "httplib.h"
+#include "json.hpp"
+#include <cerrno>
+using json = nlohmann::json;
 void mut_speak(std::string command, std::mutex& mylock){
     mylock.lock();
     int ret = system(command.c_str());
     mylock.unlock();
+}
+
+void http_request_server(std::string host_port, std::string path, std::string template_input){
+    httplib::Client cli(host_port); //
+    auto forwarded_res = cli.Post(path, template_input, "application/json");
+}
+
+struct handle_token_queue {
+
+    std::vector<std::string> queue_results;
+    std::mutex mutex_results;
+    std::condition_variable condition_results;
+
+
+    std::string recv() {
+        //std::cout<<"[recv size]: "<<queue_results.size()<<std::endl;
+        while (true) {
+            std::unique_lock<std::mutex> lock(mutex_results);
+            condition_results.wait(lock, [&]{
+                return !queue_results.empty();
+            });
+            std::string temp_str = queue_results.front();
+            queue_results.erase(queue_results.begin());
+            return temp_str;
+        }
+
+        // should never reach here
+    }
+
+
+
+    // Send a new result to a waiting id_task
+    void send(std::string temp_token) {
+        //std::cout<<"[send] size: "<<queue_results.size()<<std::endl;
+        std::unique_lock<std::mutex> lock(mutex_results);
+        queue_results.push_back(temp_token);
+        condition_results.notify_all();
+        return;
+
+    }
+};
+struct handle_token_queue token_queue;
+void http_send_token(std::string host, int port) {
+    httplib::Server svr;
+    svr.Post("/handle_send_token", [&token_queue](const httplib::Request &req, httplib::Response &res) {
+        res.set_header("Access-Control-Allow-Origin", req.get_header_value("Origin"));
+        token_queue.send(req.body);
+    });
+    std::cout<<"[http]"<<host<<":"<<port<<std::endl;
+    svr.listen(host, port);
 }
 
 std::vector<llama_token> llama_tokenize(struct llama_context * ctx, const std::string & text, bool add_bos) {
@@ -63,6 +117,7 @@ struct whisper_params {
     int32_t audio_ctx  = 0;
     int32_t n_gpu_layers = 999;
     int capacity = 1;
+    int whisper_port = 8090;
 
     float vad_thold  = 0.6f;
     float freq_thold = 100.0f;
@@ -87,6 +142,8 @@ struct whisper_params {
     std::string prompt      = "";
     std::string fname_out;
     std::string path_session = "";       // path to file for saving/loading model eval state
+    std::string whisper_host = "127.0.0.1";
+    std::string llama_server = "127.0.0.1:8083";
 };
 
 void whisper_print_usage(int argc, char ** argv, const whisper_params & params);
@@ -108,6 +165,7 @@ bool whisper_params_parse(int argc, char ** argv, whisper_params & params) {
         else if (arg == "-vth" || arg == "--vad-thold")      { params.vad_thold      = std::stof(argv[++i]); }
         else if (arg == "-fth" || arg == "--freq-thold")     { params.freq_thold     = std::stof(argv[++i]); }
         else if (arg == "-cap" || arg == "--capacity")       { params.capacity       = std::stoi(argv[++i]); }
+        else if (arg == "-port" || arg == "--whisper-port")  { params.whisper_port   = std::stoi(argv[++i]); }
         else if (arg == "-tr"  || arg == "--translate")      { params.translate      = true; }
         else if (arg == "-ps"  || arg == "--print-special")  { params.print_special  = true; }
         else if (arg == "-pe"  || arg == "--print-energy")   { params.print_energy   = true; }
@@ -124,6 +182,8 @@ bool whisper_params_parse(int argc, char ** argv, whisper_params & params) {
         else if (arg == "-ml"  || arg == "--model-llama")    { params.model_llama    = argv[++i]; }
         else if (arg == "-s"   || arg == "--speak")          { params.speak          = argv[++i]; }
         else if (arg == "-sf"  || arg == "--speak-file")     { params.speak_file     = argv[++i]; }
+        else if (arg == "-host"  || arg == "--whisper-host")     { params.whisper_host     = argv[++i]; }
+        else if (arg == "-se"  || arg == "--llama-server")     { params.llama_server     = argv[++i]; }
         else if (arg == "--prompt-file")                     {
             std::ifstream file(argv[++i]);
             std::copy(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>(), back_inserter(params.prompt));
@@ -292,6 +352,7 @@ int main(int argc, char ** argv) {
     if (whisper_params_parse(argc, argv, params) == false) {
         return 1;
     }
+    std::thread server_thread(http_send_token, params.whisper_host, params.whisper_port);
 
     if (params.language != "auto" && whisper_lang_id(params.language.c_str()) == -1) {
         fprintf(stderr, "error: unknown language '%s'\n", params.language.c_str());
@@ -323,21 +384,21 @@ int main(int argc, char ** argv) {
         lmparams.n_gpu_layers = params.n_gpu_layers;
     }
 
-    struct llama_model * model_llama = llama_load_model_from_file(params.model_llama.c_str(), lmparams);
-    if (!model_llama) {
-        fprintf(stderr, "No llama.cpp model specified. Please provide using -ml <modelfile>\n");
-        return 1;
-    }
-
-    llama_context_params lcparams = llama_context_default_params();
+//    struct llama_model * model_llama = llama_load_model_from_file(params.model_llama.c_str(), lmparams);
+//    if (!model_llama) {
+//        fprintf(stderr, "No llama.cpp model specified. Please provide using -ml <modelfile>\n");
+//        return 1;
+//    }
+//
+//    llama_context_params lcparams = llama_context_default_params();
 
     // tune these to your liking
-    lcparams.n_ctx      = 2048;
-    lcparams.seed       = 1;
-    lcparams.n_threads  = params.n_threads;
-    lcparams.flash_attn = params.flash_attn;
+//    lcparams.n_ctx      = 2048;
+//    lcparams.seed       = 1;
+//    lcparams.n_threads  = params.n_threads;
+//    lcparams.flash_attn = params.flash_attn;
 
-    struct llama_context * ctx_llama = llama_new_context_with_model(model_llama, lcparams);
+//    struct llama_context * ctx_llama = llama_new_context_with_model(model_llama, lcparams);
 
     // print some info about the processing
     {
@@ -419,91 +480,91 @@ int main(int argc, char ** argv) {
 
     prompt_llama = ::replace(prompt_llama, "{4}", chat_symb);
 
-    llama_batch batch = llama_batch_init(llama_n_ctx(ctx_llama), 0, 1);
+//    llama_batch batch = llama_batch_init(llama_n_ctx(ctx_llama), 0, 1);
 
     // init session
     std::string path_session = params.path_session;
     std::vector<llama_token> session_tokens;
-    auto embd_inp = ::llama_tokenize(ctx_llama, prompt_llama, true);
+//    auto embd_inp = ::llama_tokenize(ctx_llama, prompt_llama, true);
 
-    if (!path_session.empty()) {
-        fprintf(stderr, "%s: attempting to load saved session from %s\n", __func__, path_session.c_str());
-
-        // fopen to check for existing session
-        FILE * fp = std::fopen(path_session.c_str(), "rb");
-        if (fp != NULL) {
-            std::fclose(fp);
-
-            session_tokens.resize(llama_n_ctx(ctx_llama));
-            size_t n_token_count_out = 0;
-            if (!llama_load_session_file(ctx_llama, path_session.c_str(), session_tokens.data(), session_tokens.capacity(), &n_token_count_out)) {
-                fprintf(stderr, "%s: error: failed to load session file '%s'\n", __func__, path_session.c_str());
-                return 1;
-            }
-            session_tokens.resize(n_token_count_out);
-            for (size_t i = 0; i < session_tokens.size(); i++) {
-                embd_inp[i] = session_tokens[i];
-            }
-
-            fprintf(stderr, "%s: loaded a session with prompt size of %d tokens\n", __func__, (int) session_tokens.size());
-        } else {
-            fprintf(stderr, "%s: session file does not exist, will create\n", __func__);
-        }
-    }
+//    if (!path_session.empty()) {
+//        fprintf(stderr, "%s: attempting to load saved session from %s\n", __func__, path_session.c_str());
+//
+//        // fopen to check for existing session
+//        FILE * fp = std::fopen(path_session.c_str(), "rb");
+//        if (fp != NULL) {
+//            std::fclose(fp);
+//
+//            session_tokens.resize(llama_n_ctx(ctx_llama));
+//            size_t n_token_count_out = 0;
+//            if (!llama_load_session_file(ctx_llama, path_session.c_str(), session_tokens.data(), session_tokens.capacity(), &n_token_count_out)) {
+//                fprintf(stderr, "%s: error: failed to load session file '%s'\n", __func__, path_session.c_str());
+//                return 1;
+//            }
+//            session_tokens.resize(n_token_count_out);
+//            for (size_t i = 0; i < session_tokens.size(); i++) {
+//                embd_inp[i] = session_tokens[i];
+//            }
+//
+//            fprintf(stderr, "%s: loaded a session with prompt size of %d tokens\n", __func__, (int) session_tokens.size());
+//        } else {
+//            fprintf(stderr, "%s: session file does not exist, will create\n", __func__);
+//        }
+//    }
 
     // evaluate the initial prompt
 
-    printf("\n");
-    printf("%s : initializing - please wait ...\n", __func__);
+//    printf("\n");
+//    printf("%s : initializing - please wait ...\n", __func__);
+//
+//    // prepare batch
+//    {
+//        batch.n_tokens = embd_inp.size();
+//
+//        for (int i = 0; i < batch.n_tokens; i++) {
+//            batch.token[i]     = embd_inp[i];
+//            batch.pos[i]       = i;
+//            batch.n_seq_id[i]  = 1;
+//            batch.seq_id[i][0] = 0;
+//            batch.logits[i]    = i == batch.n_tokens - 1;
+//        }
+//    }
+//
+//    if (llama_decode(ctx_llama, batch)) {
+//        fprintf(stderr, "%s : failed to decode\n", __func__);
+//        return 1;
+//    }
+//
+//    if (params.verbose_prompt) {
+//        fprintf(stdout, "\n");
+//        fprintf(stdout, "%s", prompt_llama.c_str());
+//        fflush(stdout);
+//    }
 
-    // prepare batch
-    {
-        batch.n_tokens = embd_inp.size();
-
-        for (int i = 0; i < batch.n_tokens; i++) {
-            batch.token[i]     = embd_inp[i];
-            batch.pos[i]       = i;
-            batch.n_seq_id[i]  = 1;
-            batch.seq_id[i][0] = 0;
-            batch.logits[i]    = i == batch.n_tokens - 1;
-        }
-    }
-
-    if (llama_decode(ctx_llama, batch)) {
-        fprintf(stderr, "%s : failed to decode\n", __func__);
-        return 1;
-    }
-
-    if (params.verbose_prompt) {
-        fprintf(stdout, "\n");
-        fprintf(stdout, "%s", prompt_llama.c_str());
-        fflush(stdout);
-    }
-
-    // debug message about similarity of saved session, if applicable
-    size_t n_matching_session_tokens = 0;
-    if (session_tokens.size()) {
-        for (llama_token id : session_tokens) {
-            if (n_matching_session_tokens >= embd_inp.size() || id != embd_inp[n_matching_session_tokens]) {
-                break;
-            }
-            n_matching_session_tokens++;
-        }
-        if (n_matching_session_tokens >= embd_inp.size()) {
-            fprintf(stderr, "%s: session file has exact match for prompt!\n", __func__);
-        } else if (n_matching_session_tokens < (embd_inp.size() / 2)) {
-            fprintf(stderr, "%s: warning: session file has low similarity to prompt (%zu / %zu tokens); will mostly be reevaluated\n",
-                    __func__, n_matching_session_tokens, embd_inp.size());
-        } else {
-            fprintf(stderr, "%s: session file matches %zu / %zu tokens of prompt\n",
-                    __func__, n_matching_session_tokens, embd_inp.size());
-        }
-    }
+     // debug message about similarity of saved session, if applicable
+//    size_t n_matching_session_tokens = 0;
+//    if (session_tokens.size()) {
+//        for (llama_token id : session_tokens) {
+//            if (n_matching_session_tokens >= embd_inp.size() || id != embd_inp[n_matching_session_tokens]) {
+//                break;
+//            }
+//            n_matching_session_tokens++;
+//        }
+//        if (n_matching_session_tokens >= embd_inp.size()) {
+//            fprintf(stderr, "%s: session file has exact match for prompt!\n", __func__);
+//        } else if (n_matching_session_tokens < (embd_inp.size() / 2)) {
+//            fprintf(stderr, "%s: warning: session file has low similarity to prompt (%zu / %zu tokens); will mostly be reevaluated\n",
+//                __func__, n_matching_session_tokens, embd_inp.size());
+//        } else {
+//            fprintf(stderr, "%s: session file matches %zu / %zu tokens of prompt\n",
+//                __func__, n_matching_session_tokens, embd_inp.size());
+//        }
+//    }
 
     // HACK - because session saving incurs a non-negligible delay, for now skip re-saving session
     // if we loaded a session with at least 75% similarity. It's currently just used to speed up the
     // initial prompt so it doesn't need to be an exact match.
-    bool need_to_save_session = !path_session.empty() && n_matching_session_tokens < (embd_inp.size() * 3 / 4);
+//    bool need_to_save_session = !path_session.empty() && n_matching_session_tokens < (embd_inp.size() * 3 / 4);
 
     printf("%s : done! start speaking in the microphone\n", __func__);
 
@@ -525,22 +586,33 @@ int main(int argc, char ** argv) {
 
     // text inference variables
     const int voice_id = 2;
-    const int n_keep   = embd_inp.size();
-    const int n_ctx    = llama_n_ctx(ctx_llama);
-
-    int n_past = n_keep;
+//    const int n_keep   = embd_inp.size();
+//    const int n_ctx    = llama_n_ctx(ctx_llama);
+//
+//    int n_past = n_keep;
     int n_prev = 64; // TODO arg
-    int n_session_consumed = !path_session.empty() && session_tokens.size() > 0 ? session_tokens.size() : 0;
-
-    std::vector<llama_token> embd;
+//    int n_session_consumed = !path_session.empty() && session_tokens.size() > 0 ? session_tokens.size() : 0;
+//
+//    std::vector<llama_token> embd;
 
     // reverse prompts for detecting when it's time to stop speaking
     std::vector<std::string> antiprompts = {
-            params.person + chat_symb,
+        params.person + chat_symb,
     };
 
     // main loop
+
+    std::string inference_text = "";
     while (is_running) {
+        std::string template_input = R"({"whisper_host":"{1}:{2}","stream":true,"n_predict":400,"temperature":0.7,"stop":["</s>","{4}:","{3}:"],"repeat_last_n":256,"repeat_penalty":1.18,"top_k":40,"top_p":0.95,"min_p":0.05,"tfs_z":1,"typical_p":1,"presence_penalty":0,"frequency_penalty":0,"mirostat":0,"mirostat_tau":5,"mirostat_eta":0.1,"grammar":"","n_probs":0,"image_data":[],"cache_prompt":true,"api_key":"","slot_id":-1,"prompt":"This is a conversation between User and Llama, a friendly chatbot. Llama is helpful, kind, honest, good at writing, and never fails to answer any requests immediately and with precision.{0}"})";
+        std::string addition_input = R"(\n{1}:{0}\n{2}:)";
+        template_input = ::replace(template_input, "{1}", params.whisper_host);
+        template_input = ::replace(template_input, "{2}", std::to_string(params.whisper_port));
+        template_input = ::replace(template_input, "{3}", params.person);
+        template_input = ::replace(template_input, "{4}", params.bot_name);
+
+        addition_input = ::replace(addition_input, "{1}", params.person);
+        addition_input = ::replace(addition_input, "{2}", params.bot_name);
         // handle Ctrl + C
         is_running = sdl_poll_events();
 
@@ -620,28 +692,29 @@ int main(int argc, char ** argv) {
                 text_heard = std::regex_replace(text_heard, std::regex("^\\s+"), "");
                 text_heard = std::regex_replace(text_heard, std::regex("\\s+$"), "");
 
-                const std::vector<llama_token> tokens = llama_tokenize(ctx_llama, text_heard.c_str(), false);
-
-                if (text_heard.empty() || tokens.empty() || force_speak) {
-                    //fprintf(stdout, "%s: Heard nothing, skipping ...\n", __func__);
-                    audio.clear();
-
-                    continue;
-                }
+//                const std::vector<llama_token> tokens = llama_tokenize(ctx_llama, text_heard.c_str(), false);
+//
+//                if (text_heard.empty() || tokens.empty() || force_speak) {
+//                    //fprintf(stdout, "%s: Heard nothing, skipping ...\n", __func__);
+//                    audio.clear();
+//
+//                    continue;
+//                }
 
                 force_speak = false;
 
                 text_heard.insert(0, 1, ' ');
-                text_heard += "\n" + params.bot_name + chat_symb;
+                //text_heard += "\n" + params.bot_name + chat_symb;
                 fprintf(stdout, "%s%s%s", "\033[1m", text_heard.c_str(), "\033[0m");
                 fflush(stdout);
+                printf("\n%s%s", params.bot_name.c_str(), chat_symb.c_str());
 
-                embd = ::llama_tokenize(ctx_llama, text_heard, false);
+//                embd = ::llama_tokenize(ctx_llama, text_heard, false);
 
                 // Append the new input tokens to the session_tokens vector
-                if (!path_session.empty()) {
-                    session_tokens.insert(session_tokens.end(), tokens.begin(), tokens.end());
-                }
+//                if (!path_session.empty()) {
+//                    session_tokens.insert(session_tokens.end(), tokens.begin(), tokens.end());
+//                }
 
                 // text inference
                 bool done = false;
@@ -650,232 +723,85 @@ int main(int argc, char ** argv) {
                 int cap = 0;
                 std::vector<std::thread> threads;
                 std::mutex mylock;
+
+
+                addition_input = ::replace(addition_input, "{0}", text_heard);
+                inference_text += addition_input;
+                template_input = ::replace(template_input, "{0}", inference_text);
+                std::thread thread1(http_request_server, params.llama_server, "/whisper_completion", template_input);
+                thread1.join();
+
                 while (true) {
-                    // predict
-                    if (embd.size() > 0) {
-                        if (n_past + (int) embd.size() > n_ctx) {
-                            n_past = n_keep;
+                    // receive data from server
+                    std::string  temp_str = token_queue.recv();
+                    json received_data = json::parse(temp_str);
 
-                            // insert n_left/2 tokens at the start of embd from last_n_tokens
-                            embd.insert(embd.begin(), embd_inp.begin() + embd_inp.size() - n_prev, embd_inp.end());
-                            // stop saving session if we run out of context
-                            path_session = "";
-                            //printf("\n---\n");
-                            //printf("resetting: '");
-                            //for (int i = 0; i < (int) embd.size(); i++) {
-                            //    printf("%s", llama_token_to_piece(ctx_llama, embd[i]));
-                            //}
-                            //printf("'\n");
-                            //printf("\n---\n");
+                    if (received_data["stop"] == false){
+                        text_to_speak += received_data["content"];
+                        token_to_speak += received_data["content"];
+                        if(received_data["content"] == "\n"){
+                            inference_text += "\\n";
+                        }else {
+                            inference_text += received_data["content"];
                         }
 
-                        // try to reuse a matching prefix from the loaded session instead of re-eval (via n_past)
-                        // REVIEW
-                        if (n_session_consumed < (int) session_tokens.size()) {
-                            size_t i = 0;
-                            for ( ; i < embd.size(); i++) {
-                                if (embd[i] != session_tokens[n_session_consumed]) {
-                                    session_tokens.resize(n_session_consumed);
+                        std::string received_token = received_data["content"];
+                        printf("%s", received_token.c_str());
+                        fflush(stdout);
+
+                        cap++;
+                        if (cap >= params.capacity) {
+                            token_to_speak = ::replace(token_to_speak, "'", "'\"'\"'");
+
+                            for (std::string &antiprompt: antiprompts) {
+                                //std::string new_antipromt = antiprompt.c_str() + " ";
+                                if (antiprompt.find(received_token.c_str()) == std::string::npos) {
+                                    bool text_english_only = contains_only_english(token_to_speak);
+
+                                    std::string lang = "zh";
+                                    if (text_english_only == true) {
+                                        lang = "en";
+                                    }
+                                    std::string command = ("espeak-ng -v " + lang + " '" + token_to_speak +
+                                                           "'").c_str();
+                                    threads.emplace_back(std::thread(mut_speak, command, std::ref(mylock)));
+                                    token_to_speak = "";
+                                    cap = 0;
                                     break;
                                 }
+                            }
 
-                                n_past++;
-                                n_session_consumed++;
-
-                                if (n_session_consumed >= (int) session_tokens.size()) {
-                                    i++;
+                            for (std::string &antiprompt: antiprompts) {
+                                if (token_to_speak.length() - antiprompt.length() >= 0 &&
+                                    token_to_speak.find(antiprompt.c_str(),
+                                                        token_to_speak.length() - antiprompt.length(),
+                                                        antiprompt.length()) != std::string::npos) {
+                                    token_to_speak = ::replace(token_to_speak, antiprompt, "");
                                     break;
                                 }
-                            }
-                            if (i > 0) {
-                                embd.erase(embd.begin(), embd.begin() + i);
-                            }
-                        }
-
-                        if (embd.size() > 0 && !path_session.empty()) {
-                            session_tokens.insert(session_tokens.end(), embd.begin(), embd.end());
-                            n_session_consumed = session_tokens.size();
-                        }
-
-                        // prepare batch
-                        {
-                            batch.n_tokens = embd.size();
-
-                            for (int i = 0; i < batch.n_tokens; i++) {
-                                batch.token[i]     = embd[i];
-                                batch.pos[i]       = n_past + i;
-                                batch.n_seq_id[i]  = 1;
-                                batch.seq_id[i][0] = 0;
-                                batch.logits[i]    = i == batch.n_tokens - 1;
-                            }
-                        }
-
-                        if (llama_decode(ctx_llama, batch)) {
-                            fprintf(stderr, "%s : failed to decode\n", __func__);
-                            return 1;
-                        }
-                    }
-
-
-                    embd_inp.insert(embd_inp.end(), embd.begin(), embd.end());
-                    n_past += embd.size();
-
-                    embd.clear();
-
-                    if (done) break;
-
-                    {
-                        // out of user input, sample next token
-                        const float top_k          = 5;
-                        const float top_p          = 0.80f;
-                        const float temp           = 0.30f;
-                        const float repeat_penalty = 1.1764f;
-
-                        const int repeat_last_n    = 256;
-
-                        if (!path_session.empty() && need_to_save_session) {
-                            need_to_save_session = false;
-                            llama_save_session_file(ctx_llama, path_session.c_str(), session_tokens.data(), session_tokens.size());
-                        }
-
-                        llama_token id = 0;
-
-                        {
-                            auto logits = llama_get_logits(ctx_llama);
-                            auto n_vocab = llama_n_vocab(model_llama);
-
-                            logits[llama_token_eos(model_llama)] = 0;
-
-                            std::vector<llama_token_data> candidates;
-                            candidates.reserve(n_vocab);
-                            for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
-                                candidates.emplace_back(llama_token_data{token_id, logits[token_id], 0.0f});
-                            }
-
-                            llama_token_data_array candidates_p = { candidates.data(), candidates.size(), false };
-
-                            // apply repeat penalty
-                            const float nl_logit = logits[llama_token_nl(model_llama)];
-
-                            llama_sample_repetition_penalties(ctx_llama, &candidates_p,
-                                                              embd_inp.data() + std::max(0, n_past - repeat_last_n),
-                                                              repeat_last_n, repeat_penalty, 0.0, 0.0f);
-
-                            logits[llama_token_nl(model_llama)] = nl_logit;
-
-                            if (temp <= 0) {
-                                // Greedy sampling
-                                id = llama_sample_token_greedy(ctx_llama, &candidates_p);
-                            } else {
-                                // Temperature sampling
-                                llama_sample_top_k(ctx_llama, &candidates_p, top_k, 1);
-                                llama_sample_top_p(ctx_llama, &candidates_p, top_p, 1);
-                                llama_sample_temp (ctx_llama, &candidates_p, temp);
-                                id = llama_sample_token(ctx_llama, &candidates_p);
-                            }
-                        }
-
-                        if (id != llama_token_eos(model_llama)) {
-                            // add it to the context
-                            embd.push_back(id);
-
-                            text_to_speak += llama_token_to_piece(ctx_llama, id);
-
-                            printf("%s", llama_token_to_piece(ctx_llama, id).c_str());
-
-
-
-                            token_to_speak += llama_token_to_piece(ctx_llama, id);
-                            cap++;
-                            if (cap >= params.capacity) {
-                                token_to_speak = ::replace(token_to_speak, "'", "'\"'\"'");
-
-                                for (std::string & antiprompt : antiprompts) {
-                                    //std::string new_antipromt = antiprompt.c_str() + " ";
-                                    if(antiprompt.find(llama_token_to_piece(ctx_llama, id).c_str()) == std::string::npos){
-                                        bool text_english_only = contains_only_english(token_to_speak);
-
-                                        std::string lang = "zh";
-                                        if (text_english_only == true) {
-                                            lang = "en";
-                                        }
-                                        std::string command = ("espeak-ng -v " + lang + " '" + token_to_speak + "'").c_str();
-                                        threads.emplace_back(std::thread(mut_speak,command,std::ref(mylock)));
-                                        //int ret = system(("espeak-ng -v " + lang + " '" + token_to_speak + "'").c_str());
-//                                        if (ret != 0) {
-//                                            fprintf(stderr, "%s: failed to speak\n", __func__);
-//                                        }
-                                        token_to_speak = "";
-                                        cap = 0;
-                                        break;
-                                    }
-                                }
-
-                                for (std::string & antiprompt : antiprompts) {
-                                    if (token_to_speak.length() - antiprompt.length() >= 0 && token_to_speak.find(antiprompt.c_str(), token_to_speak.length() - antiprompt.length(),
-                                                                                                                  antiprompt.length()) != std::string::npos) {
-                                        //printf("00 %s", token_to_speak.c_str());
-                                        token_to_speak = ::replace(token_to_speak, antiprompt, "");
-                                        break;
-                                    }
-                                }
-
-
-//                                bool text_english_only = contains_only_english(token_to_speak);
-//
-//                                std::string lang = "zh";
-//                                if (text_english_only == true) {
-//                                    lang = "en";
-//                                }
-//
-//
-//
-//                                int ret = system(("espeak-ng -v " + lang + " '" + token_to_speak + "'").c_str());
-//                                if (ret != 0) {
-//                                    fprintf(stderr, "%s: failed to speak\n", __func__);
-//                                }
-//                                token_to_speak = "";
-//                                cap = 0;
                             }
 
                             fflush(stdout);
                         }
-                    }
-
-                    {
-                        std::string last_output;
-                        for (int i = embd_inp.size() - 16; i < (int) embd_inp.size(); i++) {
-                            last_output += llama_token_to_piece(ctx_llama, embd_inp[i]);
-                        }
-                        last_output += llama_token_to_piece(ctx_llama, embd[0]);
-                        for (std::string & antiprompt : antiprompts) {
-                            if (last_output.find(antiprompt.c_str(), last_output.length() - antiprompt.length(), antiprompt.length()) != std::string::npos) {
-                                done = true;
-                                //printf("before %s, %s, %s", antiprompt.c_str(), token_to_speak.c_str(), text_to_speak.c_str());
-                                text_to_speak = ::replace(text_to_speak, antiprompt, "");
-
-                                token_to_speak = ::replace(token_to_speak, antiprompt, "");
-                                //printf("after %s, %s", token_to_speak.c_str(), text_to_speak.c_str());
-                                fflush(stdout);
-                                need_to_save_session = true;
-                                break;
-                            }
-                        }
+                    }else {
+                        break;
                     }
 
                     is_running = sdl_poll_events();
-
                     if (!is_running) {
                         break;
                     }
                 }
+                printf("\n%s%s", params.person.c_str(), chat_symb.c_str());
+                fflush(stdout);
+
 
                 if (token_to_speak != "") {
                     token_to_speak = ::replace(token_to_speak, "'", "'\"'\"'");
                     for (std::string & antiprompt : antiprompts) {
                         if (token_to_speak.length() - antiprompt.length() >= 0 && token_to_speak.find(antiprompt.c_str(), token_to_speak.length() - antiprompt.length(),
                                                                                                       antiprompt.length()) != std::string::npos) {
-                            printf("00 %s", token_to_speak.c_str());
+
                             token_to_speak = ::replace(token_to_speak, antiprompt, "");
                             break;
                         }
@@ -896,12 +822,12 @@ int main(int argc, char ** argv) {
                     cap = 0;
                 }
                 //speak_with_file(params.speak, text_to_speak, params.speak_file, voice_id);
-
                 audio.clear();
 
                 for(int i =0 ; i<threads.size(); i++){
                     threads[i].join();
                 }
+
             }
         }
     }
@@ -910,9 +836,10 @@ int main(int argc, char ** argv) {
 
     whisper_print_timings(ctx_wsp);
     whisper_free(ctx_wsp);
+//
+//    llama_print_timings(ctx_llama);
+//    llama_free(ctx_llama);
 
-    llama_print_timings(ctx_llama);
-    llama_free(ctx_llama);
-
+    server_thread.join();
     return 0;
 }

@@ -144,6 +144,7 @@ struct whisper_params {
     std::string path_session = "";       // path to file for saving/loading model eval state
     std::string whisper_host = "127.0.0.1";
     std::string llama_server = "127.0.0.1:8083";
+    std::string intranet_host = "127.0.0.1";
 };
 
 void whisper_print_usage(int argc, char ** argv, const whisper_params & params);
@@ -184,6 +185,7 @@ bool whisper_params_parse(int argc, char ** argv, whisper_params & params) {
         else if (arg == "-sf"  || arg == "--speak-file")     { params.speak_file     = argv[++i]; }
         else if (arg == "-host"  || arg == "--whisper-host")     { params.whisper_host     = argv[++i]; }
         else if (arg == "-se"  || arg == "--llama-server")     { params.llama_server     = argv[++i]; }
+        else if (arg == "-ihost"  || arg == "--intranet-host")     { params.intranet_host     = argv[++i]; }
         else if (arg == "--prompt-file")                     {
             std::ifstream file(argv[++i]);
             std::copy(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>(), back_inserter(params.prompt));
@@ -606,7 +608,7 @@ int main(int argc, char ** argv) {
     while (is_running) {
         std::string template_input = R"({"whisper_host":"{1}:{2}","stream":true,"n_predict":400,"temperature":0.7,"stop":["</s>","{4}:","{3}:"],"repeat_last_n":256,"repeat_penalty":1.18,"top_k":40,"top_p":0.95,"min_p":0.05,"tfs_z":1,"typical_p":1,"presence_penalty":0,"frequency_penalty":0,"mirostat":0,"mirostat_tau":5,"mirostat_eta":0.1,"grammar":"","n_probs":0,"image_data":[],"cache_prompt":true,"api_key":"","slot_id":-1,"prompt":"This is a conversation between User and Llama, a friendly chatbot. Llama is helpful, kind, honest, good at writing, and never fails to answer any requests immediately and with precision.{0}"})";
         std::string addition_input = R"(\n{1}:{0}\n{2}:)";
-        template_input = ::replace(template_input, "{1}", params.whisper_host);
+        template_input = ::replace(template_input, "{1}", params.intranet_host);
         template_input = ::replace(template_input, "{2}", std::to_string(params.whisper_port));
         template_input = ::replace(template_input, "{3}", params.person);
         template_input = ::replace(template_input, "{4}", params.bot_name);

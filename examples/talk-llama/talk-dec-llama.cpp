@@ -67,8 +67,8 @@ struct handle_token_queue {
     }
 };
 struct handle_token_queue token_queue;
-void http_send_token(std::string host, int port) {
-    httplib::Server svr;
+void http_send_token(httplib::Server& svr, std::string host, int port) {
+    //httplib::Server svr;
     svr.Post("/handle_send_token", [&token_queue](const httplib::Request &req, httplib::Response &res) {
         res.set_header("Access-Control-Allow-Origin", req.get_header_value("Origin"));
         token_queue.send(req.body);
@@ -350,11 +350,11 @@ The transcript only includes text, it does not include markup like HTML and Mark
 
 int main(int argc, char ** argv) {
     whisper_params params;
-
+    httplib::Server svr;
     if (whisper_params_parse(argc, argv, params) == false) {
         return 1;
     }
-    std::thread server_thread(http_send_token, params.whisper_host, params.whisper_port);
+    std::thread server_thread(http_send_token, std::ref(svr), params.whisper_host, params.whisper_port);
 
     if (params.language != "auto" && whisper_lang_id(params.language.c_str()) == -1) {
         fprintf(stderr, "error: unknown language '%s'\n", params.language.c_str());
@@ -842,7 +842,7 @@ int main(int argc, char ** argv) {
 //
 //    llama_print_timings(ctx_llama);
 //    llama_free(ctx_llama);
-
+    svr.stop();
     server_thread.join();
     return 0;
 }

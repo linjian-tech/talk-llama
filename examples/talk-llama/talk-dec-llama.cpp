@@ -697,11 +697,12 @@ int main(int argc, char ** argv) {
 //                const std::vector<llama_token> tokens = llama_tokenize(ctx_llama, text_heard.c_str(), false);
 //
 //                if (text_heard.empty() || tokens.empty() || force_speak) {
-//                    //fprintf(stdout, "%s: Heard nothing, skipping ...\n", __func__);
-//                    audio.clear();
-//
-//                    continue;
-//                }
+                if (text_heard.empty() || force_speak) {
+                    //fprintf(stdout, "%s: Heard nothing, skipping ...\n", __func__);
+                    audio.clear();
+
+                    continue;
+                }
 
                 force_speak = false;
 

@@ -17,5 +17,5 @@ sudo docker run -it --rm   -v /path/to/models:/models  -p 8090:8090 --add-host h
 ```
 # run in local machine (using llama dec-server)
 ```bash
-./talk-dec-llama -mw /home/lenovo/桌面/whisper/whisper.cpp/models/ggml-base.bin -ml /home/lenovo/桌面/whisper/whisper.cpp/models/ggml-model-q4_0.gguf -p "Georgi" -t 2 -l zh -cap 3
+./talk-dec-llama -mw /home/lenovo/桌面/whisper/whisper.cpp/models/ggml-base.bin  -p "Georgi" -t 2 -l zh -cap 3
 ```
